@@ -1,0 +1,586 @@
+---
+title: "Effects of Exercise and Sleep on Cognitive Function: A Repeated Measures Study"
+author: "Matthew Blong & Zak Kornberg"
+output: 
+    bookdown::pdf_document2: default
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+#Retain this code chunk!!!
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(lme4)
+library(nlme)
+library(lmerTest)
+library(dplyr)
+library(emmeans)
+library(effects)
+library(pbkrtest)
+library(table1)
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+
+
+```
+
+
+```{r, echo=FALSE}
+data <- read.csv("Island Project(data).csv")
+
+
+data$Exercise_type <- factor(data$Exercise_type, levels = c("C", "L", "M", "H"), labels = c("Control", "Walk", "Jog", "Run"))
+data$Visit_Number <- factor(data$Visit_Number)
+
+# scaling all three cognitive tests to standarize them
+data$Attention_Test_z <- scale(data$Attention_Test_missed)
+data$Mental_Arithmatic_basic_z <- scale(data$Mental_Arithmatic_basic_missed)
+data$Memory_Test_cards_z <- scale(data$Memory_Test_cards_missed)
+
+
+# flipping sign for better intuition -- positive values now associated with better performance
+data$cog_mean <- -1 * rowMeans(data[, c("Attention_Test_z", "Mental_Arithmatic_basic_z", "Memory_Test_cards_z")], na.rm = TRUE)
+data$cog_sum <- -1 * rowSums(data[, c("Attention_Test_z", "Mental_Arithmatic_basic_z", "Memory_Test_cards_z")], na.rm = TRUE)
+
+data$Pulse_delta <- data$POST_Pulse - data$PRE_Pulse
+data$Blood_Pressure_sys_delta <- data$POST_blood_pressure_sys - data$PRE_blood_pressure_sys
+data$Blood_Pressure_dia_delta <- data$POST_blood_pressure_dia - data$PRE_blood_pressure_dia
+data$Oximeter_delta <- data$POST_Oximeter - data$PRE_Oximeter
+
+
+# includes all features, no interactions
+model_base <- lmer(cog_mean ~ Exercise_type + Visit_Number + Order_Number + Age + Blood_Pressure_dia_delta + Blood_Pressure_sys_delta + Pulse_delta + Oximeter_delta + Sleep_hours + (1|Name), data = data)
+
+# same as above, but with an interaction between exercise and sleep
+model_interaction_base <- lmer(cog_mean ~ Exercise_type*Sleep_hours + Visit_Number + Order_Number + Age + Blood_Pressure_dia_delta + Blood_Pressure_sys_delta + Pulse_delta + Oximeter_delta + (1|Name), data = data)
+
+# interaction between exercise and sleep, physiological fixed effects removed
+model_interaction_no_physio <- lmer(cog_mean ~ Exercise_type*Sleep_hours + Visit_Number + Order_Number + Age + (1|Name), data = data)
+
+# interaction between exercise and sleep, random intercept
+model_interaction_random_int <- lmer(cog_mean ~ Exercise_type*Sleep_hours + (1|Name), data = data)
+
+
+# interaction between exercise and sleep, random slope random intercept
+model_interaction_random_slope_random_int <- lmer(cog_mean ~ Exercise_type*Sleep_hours + (1 + Sleep_hours|Name), data = data)
+
+model_final <- model_interaction_random_slope_random_int
+
+#confint(model_final, oldNames=FALSE)
+
+model_final <- model_interaction_random_slope_random_int
+
+model_final.1 <- lmer(cog_mean ~ Exercise_type*Sleep_hours + (Sleep_hours||Name), data = data)
+model_final.2 <- lmer(cog_mean ~ Exercise_type*Sleep_hours + (1|Name), data = data)
+
+#confint(model_final.1, oldNames=FALSE)
+#confint(model_interaction_random_int, oldNames=FALSE)
+
+#summary(model_interaction_random_int)
+
+comp_aic <- AIC(model_base, model_interaction_base, model_interaction_no_physio, model_interaction_random_int, model_interaction_random_slope_random_int)
+#comp_aic
+comp_bic <- BIC(model_base, model_interaction_base, model_interaction_no_physio, model_interaction_random_int, model_interaction_random_slope_random_int)
+#comp_bic
+
+model_comp <- data.frame(
+  Model = rownames(comp_aic),
+  df = comp_aic$df,
+  AIC = comp_aic$AIC,
+  BIC = comp_bic$BIC
+)
+
+
+#summary(model_final)
+
+final_coef <- summary(model_final)$coefficients
+```
+
+```{r include=FALSE}
+LME <- lme( cog_mean ~ Exercise_type*Sleep_hours, random = ~1|Name, data=data)
+getVarCov(LME, individual=1, type="marginal")
+
+LME.i <- lme( cog_mean ~ Exercise_type*Sleep_hours, random = ~1|Name, correlation=corSymm(form=~1|Name), data=data)
+getVarCov(LME.i, individual=1, type="marginal")
+
+LME.ii <- lme( cog_mean ~ Exercise_type*Sleep_hours, random = ~1|Name, correlation=corAR1(form=~1|Name), data=data)
+getVarCov(LME.ii, individual=1, type="marginal")
+
+AIC(LME, LME.i, LME.ii)
+BIC(LME, LME.i, LME.ii)
+
+```
+
+# Abstract 
+
+Previous research exploring the relationship between physical exercise and cognitive function illustrated a positive association between the former and performance in the latter. To further investigate this relationship, we collected data from *The Islands*, a simulated study population developed by Dr. Michael Bulmer of the University of Queensland [@bulmer2011life]. Within *the Islands*, our population of interest were students from Hofn University. We wanted to better understand how varying levels of aerobic exercise intensity and sleep duration affect performance on mental aptitude tests measuring attention, memory, and mental arithmetic. Participants, through repeated measures over four separate visits, engaged in three different aerobic exercises for thirty minutes (walking, jogging, and running), depending on visit number. After their assigned exercise treatment, we evaluated participant's cognitive abilities through testing performance in attention, memory, and mental arithmetic. We measured pre- and post-treatment vital signs to control for physical fitness of each participant. In addition, expecting that hours of sleep the night before could also effect performance in our cognitive tests, we included this as a moderator in our analysis. Although we did not find a significant relationship between treatment and cognitive function, we did find a significant interaction effect between sleep and exercise treatment, specifically our highest intensity exercise, which illustrated that the negative effects from the highest exercise, likely from fatigue, were mitigated as hours of sleep the night before increased.
+
+
+# Introduction
+
+  In "Effects of Physical Exercise on Cognitive Functioning and Wellbeing: Biological and Psychological Benefits," Mandolesi et al (2018) discuss in a literature review how physical exercise (PE) can positively benefit cognitive function. They cite examples such as improvements in memory and attention, and in a study for children, they found that PE improved scores in mathematics. Using this as a starting point, we wanted to see if we could experimentally replicate these findings. Although Mandolesi et al did not determine this as a contributing factor toward improvements in cognition, we suspect that the hours a participant slept the night before would affect our results since sleep deprivation has negative effects on cognitive ability. For this reason we wanted to include sleep as a moderator in our analysis [@khan2023consequences]. Moreover, we wanted to know if participants that exercised beforehand would score better on tests aimed at measuring cognitive ability compared to those that did not. In addition, we were curious to see if not only PE in general affected mental aptitude but also the level of exercise intensity would influence participants' performance. Thus, evaluating participants at varying levels of exercise along with documenting the hours of sleep they had the night before, we aimed to determine how these basic lifestyle choices would affect overall cognitive function.
+
+**<u>Research Question</u>**:
+How do higher levels of aerobic exercise intensity and sleep duration affect performance on mental aptitude tests measuring attention, memory, and mental arithmetic?
+
+  Our motivation behind this study originated from our personal interest in exercise. As both university students and people who incorporate various modes of exercise on a weekly, if not daily, basis, we were interested to see if physical exercise could improve not only executive function but also our ability to process and retain information. In addition, university students also suffer from irregular sleep schedules, so we wanted to include hours of sleep in our model to better explain the relationship between lifestyle choices such as exercise and cognition [@hershner2014causes]. We expect the results of this study to particularly pique interest in school administrators, from elementary to university level. Determining a positive relationship between exercise and cognitive ability might encourage schools to adopt programs that encourage physical exercise as a means to better improve student performance as well as overall health.   
+
+<center>
+```{r tab-population, echo = FALSE}
+data2 <- data %>% 
+  rename(Systolic = Blood_Pressure_sys_delta,
+         Diastolic = Blood_Pressure_dia_delta,
+         Pulse = Pulse_delta, 
+         Oximeter = Oximeter_delta,
+         Exercise = Exercise_type,
+         Sleep = Sleep_hours,
+         Attention = Attention_Test_missed,
+         Memory = Memory_Test_cards_missed,
+         Arithmetic = Mental_Arithmatic_basic_missed,
+         Composite = cog_mean, 
+         Visit = Visit_Number)
+name.lev <- gsummary(data2, groups = data$Name, invariantsOnly = TRUE)
+table1(~Age + Sex + Department, data=name.lev, caption="Summary statistics of sample from Hofn Univeristy student population by age, sex and department")
+```
+</center>
+
+
+  For this study, we used a simulated population from *The Islands*, developed by Dr Michael Bulmer at the University of Queensland [@bulmer2011life]. We sampled from students from Hofn University. We break down the composition of the population of interest by age, sex, and department within the university in Table \@ref(tab:tab-population). We find that the mean age for our students is $31.5$, granted that our Island population lives longer on average than the rest of the world. Also, $63.3\%$ of our sample were females and $36.7\%$ were males. Although not of interest for our analysis, we also categorized each student by their department. 
+
+
+# Methods
+
+```{r tab-variables, echo=FALSE}
+
+variables <- data.frame(
+  Variable = c(
+    "Age", "Sex", "Name", "Visit", "Order", "Exercise", "Sleep",
+    "Oximeter", "Systolic", "Diastolic", "Pulse",
+    "Attention", "Memory", "Arithmetic", "Composite"
+  ),
+  
+  Description = c(
+    "How old each participant is when treatment started",
+    "Male or Female",
+    "Name of the participant",
+    "Index 1–4 indicating when each treatment occurred",
+    "Index 1–24 indicating treatment combination",
+    "Control, Low, Medium, or High Intensity Exercise",
+    "Amount of sleep each participant reported getting the night before each visit",
+    "Difference in oxygen saturation (SpO2) between pre- and post-treatment",
+    "Difference in systolic blood pressure between pre- and post-treatment",
+    "Difference in diastolic blood pressure between pre- and post-treatment",
+    "Difference in pulse between pre- and post-treatment",
+    "Number of Z’s missed in 10-minute attention test",
+    "Number of cards missed in memory recall from a 10-card draw",
+    "Number of mental math questions missed out of 40",
+    "Composite score of scaled cognitive tests"
+  ),
+  
+  Unit = c(
+    "Years", "Categorical", "Categorical", "Categorical", "Categorical",
+    "Categorical", "Hours", "Percentage", "mmHg",
+    "mmHg", "bpm", "Counts", "Counts", "Counts", "Z-scores"
+  ),
+  
+  Role = c(
+    "Precision Variable",
+    "Precision Variable",
+    "Grouping Variable",
+    "Design Variable",
+    "Design Variable",
+    "Primary Explanatory Variable",
+    "Precision Variable",
+    "Precision Variable",
+    "Precision Variable",
+    "Precision Variable",
+    "Precision Variable",
+    "Partial Response Variable",
+    "Partial Response Variable",
+    "Partial Response Variable",
+    "Response Variable"
+  )
+)
+
+kable(
+  variables,
+  caption = "(\\#tab:tab-variables) Description of all variables measured with units and role in data analysis",
+  booktabs = TRUE,
+  longtable = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    font_size = 9
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "2.5cm") %>%
+  column_spec(2, width = "6cm") %>%
+  column_spec(3, width = "2.5cm") %>%
+  column_spec(4, width = "3cm")
+```
+
+```{r fig-cog-exercise, fig.cap="Composite cognitive scores by exercise type", echo = FALSE}
+p <- ggplot(data = data, mapping = aes(x = Exercise_type, y = cog_mean, fill = Exercise_type, group = Exercise_type))
+
+p +
+  geom_boxplot() +
+  labs(
+    title = "Distributions of Cognitive Scores by Exercise Treatment",
+    x = "Exercise Treatment",
+    y = "Composite Cognitive Score",
+    color = "Exercise Treatment"
+  )
+```
+
+After indexing each Hofn University student from a composite list, we randomly selected and obtained consent from $30$ participants. We recorded their age, sex, and department. Since we had four exercise treatment levels in our study, we had $4!= 24$ possible treatment combinations. We randomly assigned each student a treatment order from the $24$ possible combinations as way to control for any variability that may be due to treatment order. Unconcerned with a substantial loss in power and due to time constraints, only some treatment orders were repeated among different participants. In addition to our exercise treatment, we collected pre- and post-treatment vital signs such as oxygen saturation ($SpO_2$), blood pressure (systolic/diastolic mmHg) and pulse (beats per minute) as a way to control for baseline physical fitness among participants. On *The Islands* website, the above measurements were listed as follows under "Physiology": "Oximeter," "Blood Pressure," and "Pulse Meter." Before vital measurements and treatment, the number of hours each participant slept the night before was recorded using the chat function by asking "How many hours of sleep did you get last night?" These are our covariates and precision variables. We limited the scope of our exercise treatment to aerobic exercise. Besides our control (no exercise), we had three levels to our treatment program: low, medium, and high. The lowest intensity aerobic exercise was walking, our medium intensity jogging, and our highest intensity running. The above tasks were listed as follows under "Exercise": "Relaxing Walk Outdoors 30 mins," "Jog Outdoors 30 mins, and "Run Outdoors 30 mins." These treatments are our primary explanatory variables. Each exercise took place outside and for thirty minutes to standardize the length of our treatment and experimental setting. Our control group simply waited thirty minutes before post-treatment vitals were taken. Directly afterwards, three cognitive tests were administered in the following order: a ten-minute attention test, memory card game, and a basic arithmetic test. These were listed under "Mental Tasks": "Attention Test 10 mins," "Memory Test Cards," and "Mental Arithmetic Basic 4 mins." 
+
+First, the attention test entails a participant "watching a series of letters appear and pressing a button each time a Z appears." [@bulmer2011life]. Second, the memory card game is when a participant "look[s] at 10 cards drawn from a standard 52-card deck for two minutes and then writ[es] down all the cards [they] can remember in one minute." Third, the basic arithmetic test comprises of a participant "answering 40 basic mental arithmetic questions in $4$ minutes." The number missed from each test was documented. We then normalized and scaled each result from our cognitive tests (since they were measured on different scales) and averaged them together to create a composite score. The distributions of these composite cognitive scores by exercise treatment can be seen in Figure \@ref(fig:fig-cog-exercise). Since we accounted for number of missed in each cognitive test, composite scores were multiplied by a scalar of $-1$ to "correctly indicate the direction of change" since "lower scores indicate better performance" [@andrade2021z]. This is our response variable. We hypothesized that there is a positive relationship between our composite score and the primary explanatory variable of exercise treatments.  
+
+
+Another thing to note, we had one participant withdraw from our study. To maintain our intended sample size, we resampled another student from our Hofn University population and assigned them the same treatment protocol as the participant who dropped out. In addition, there were a few participants who were asleep and were absent from participating in our study for that day, so they were one visit behind schedule than other participants. Also, we had a washout period of two weeks Island time ($24$ hours our time) to prevent overfatigue from exercise programs.
+
+
+We fit several linear mixed effects models to evaluate the contribution of the various physiological covariates, interaction effects, and random effects. We fit the following baseline model in R:  
+
+
+
+$$
+\begin{aligned}
+Composite_{ij} = \;& \beta_0 + \beta_1Exercise_{ij} + \beta_2Visit_{ij} + \beta_3Order_{ij} \\
+&+ \beta_4Age_{ij} + \beta_5Diastolic_{ij} + \beta_6Systolic_{ij} \\
+&+ \beta_7Pulse_{ij} + \beta_8Oximeter_{ij} + \beta_9Sleep_{ij} + b_i +\epsilon_{ij}
+\end{aligned}
+$$
+
+
+where
+
+$$
+b_i \sim N(0, \sigma_b^2)
+\qquad\text{and}\qquad
+\epsilon_{ij} \sim N(0, \sigma^2)
+$$
+
+As mentioned in Table \@ref(tab:tab-variables),  'Composite' is our response variable, capturing the effect of interest cognitive function, and our primary explanatory variable  'Exercise' had several covariates:  'Visit' was a design variable to capture the repeated measures on study participants, whereas  'Age,'  'Diastolic,'  'Systolic,'  'Pulse,'  'Oximeter,' and  'Sleep' are covariates to capture possible sources of variation within our sample. However, we reduce our model through using `KRmodcomp()` from the pbkrtest package in R as a way to compare our full model to different variations of a reduced model. The only significant relationship in our full model was 'Sleep'.  
+
+```{r tab-aic-bic-comparison, echo=FALSE}
+
+kable(model_comp,
+  caption = "(\\#tab:tab-aic-bic-comparison) AIC and BIC comparisons for a couple of the different models we looked at. While AIC and BIC alone are not grounds for model selection, here we observe a progressive improvement in model fit as we continually simplified the model. In the final model we add a random slope based on the hypothesis that participants may differ in their response to sleep hours.",
+  booktabs = TRUE,
+  longtable = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    font_size = 9
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "5cm") %>%
+  column_spec(2, width = "2.5cm") %>%
+  column_spec(3, width = "2.5cm") %>%
+  column_spec(4, width = "2.5cm") 
+```
+
+We progressively tested various models, slowly reducing the number of covariates and precision variables based on `KRmodtest()` and AIC comparisons. More details on the model selection process can be found in **Appendix B**. However, we suspected that there might be an interaction effect between  'Exercise' and  'Sleep,' in that sleep moderates the effects of physical exercise on cognitive function since sleep also affects athletic performance as well as cognition [@charest2022sleep]. Through our model reduction process we found that we could significantly simplify our model with minimal loss of precision. Our final two models ended up only containing 'Sleep' and 'Exercise' as fixed effects, and 'Name' (participant) as a random effect. We wound up with two related models: a random intercept only model and a model with a random slope and a random intercept. 
+
+
+$$
+\begin{aligned}
+Composite_{ij} = \;& \beta_0 + \beta_1Exercise_{ij} + \beta_2Sleep_{ij} \\
+&+ \beta_3(Exercise_{ij}\times Sleep_{ij}) + b_{0i} + \epsilon_{ij}
+\end{aligned}
+$$
+
+where
+
+$$
+b_{0i} \sim N(0, \sigma_b^2)
+\qquad\text{and}\qquad
+\epsilon_{ij} \sim N(0, \sigma^2)
+$$
+
+$$
+Composite_{ij}
+=
+\beta_0
++
+\beta_1 \text{Exercise}_{ij}
++
+\beta_2 \text{Sleep}_{ij}
++
+\beta_3
+\bigl(
+\text{Exercise}_{ij}
+\times
+\text{Sleep}_{ij}
+\bigr)
++
+b_{0i}
++
+b_{1i}\text{Sleep}_{ij}
++
+\varepsilon_{ij}
+$$
+
+$$
+\begin{pmatrix}
+b_{0i} \\
+b_{1i}
+\end{pmatrix}
+\sim
+N
+\left(
+\begin{pmatrix}
+0 \\
+0
+\end{pmatrix},
+\begin{pmatrix}
+\sigma_{b0}^2 & \sigma_{b01} \\
+\sigma_{b01} & \sigma_{b1}^2
+\end{pmatrix}
+\right)
+$$
+
+$$
+\varepsilon_{ij} \sim N(0,\sigma^2)
+$$
+
+The random slope model accounts for the within-participant correlation from observations of the same person. We extended this by also allowing for a random slope of 'Sleep', such that the effect of sleep on cognition could vary patient to patient. The random slope and random intercept model produced improved AIC and BIC values relative to the random intercept model, suggesting meaningful between-participant effects. However, this model also produced a singularity warning and estimated correlation of $-1$, indicating that the covariance structure may have been hard to estimate reliably given the limited number of repeated observations per participant. As a result, we decided to focus our analysis on the random intercept only model. If we could expand this model with more repeated measures, we would then choose our random intercept and random slope model.
+
+
+
+# Results 
+
+```{r fig-pred-plot, fig.cap="Predictor effect plot to visualize the interaction effect between exercise type and hours of sleep", echo=FALSE}
+
+plot(
+  predictorEffect("Exercise_type", model_final),
+  main = "Predictor Effect Plot for Exercise Treatment",
+  xlab = "Exercise Treatment",
+  ylab = "Composite Cognitive Score"
+)
+
+```
+
+
+```{r tab-final-coefficients, echo=FALSE}
+
+kable(round(final_coef,3),
+  caption = "(\\#tab:tab-final-coefficients) Coefficient estimates from our final reduced model with associated standard errors, degrees of freedom, test statistic, and p-value.",
+  booktabs = TRUE,
+  longtable = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    font_size = 9
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "2.5cm") %>%
+  column_spec(2, width = "2.5cm") %>%
+  column_spec(3, width = "2.5cm") %>%
+  column_spec(4, width = "2.5cm")
+
+```
+
+This model illustrates two significant effects: the highest intensity of exercise type and the interaction between high intensity exercise and sleep. To note, since our response was the average of our normalized cognitive test scores, our coefficients can be interpreted as standard deviations from the mean. Table \@ref(tab:tab-final-coefficients) contains the coefficients table from our final model. Our control groups baseline composite score was -0.723, and there was within participant variation of 0.8087 standard deviations. We see that when participants completed the highest intensity exercise program (Running outdoors for $30$ minutes) they scored approximately $3$ standard deviations below average on cognitive tests compared to the control when holding sleep and our random effects constant. Since our interaction effect was also significant, we found that the negative effects of running outdoors for thirty minutes was mitigated by 0.131 standard deviations for each increase in one unit of sleep when compared to the control group.
+
+
+From Figure \@ref(fig:fig-pred-plot), we illustrate the significant effect of our interaction between running for thirty minutes outdoors and hours of sleep. We can see that as hours of sleep increases that the negative effects of the high-intensity exercise lessen, visually demonstrating the dependency between these two variables. 
+
+
+# Discussion 
+
+The results of our findings were not as expected. Based on previous research, we were hoping to find a positive relationship between exercise type and cognitive function, where the more intense the exercise the better an individual would perform on our three cognitive tests. However, we found somewhat the opposite effect. We found that high intensity exercise may actual impair, rather than improve, cognitive performance in situations where people are receiving inadequate sleep. After participants ran outdoors for thirty minutes, they performed worse on our cognitive tests on average. This effect could be a design issue, where participants took their cognitive tests directly after their post-treatment vitals were documented. Participants may have been so fatigued from running for an entire thirty minutes that they, then, performed worse on cognitive tests than those who were in the control group and performed no exercise. Although we suspected that sleep would have an effect on cognitive ability, we found it interesting that sleep could moderate the negative effects of the highest intensity exercise type, possibly suggesting that how much sleep a participant received the night before can improve cognitive ability after physical exhaustion from aerobic exercise.  
+
+For future studies, we recommend that exercise programs with repeated measures should be performed longitudinally rather than in a short-term experimental setting as to control for fatigue from exercise treatments. In order to properly study the effects of exercise on cognitive ability, programs need to be long term, routine, and should test for cognitive ability, perhaps, at the end of the program in order to control for fatigue that may affect our results. Considering the limitations of our design, our study confines itself, really, to the effect of physical fatigue from aerobic exercise on cognitive ability rather than our intended investigation on the positive effects of exercise. However, we hope that future research can, at least, use our findings as a starting point to further examine how hours of sleep can moderate the effects of physical exhaustion from exercise on cognitive ability. 
+
+
+# References
+
+::: {#refs}
+:::
+
+
+# Appendix A
+
+
+
+```{r fig-diagnostic, echo=FALSE, fig.cap = "Residual vs fitted and QQ plot of our final model. The residual vs fitted plot is generally centered around zero, with no strong unbalances or funnels. We do see a slightly wider variance in the [0, 1] range, but is not overly concerning. The QQ plot clearly shows that our assumption of normality has been met."}
+par(mfrow = c(1, 2))
+
+# Residuals vs fitted
+plot(
+  fitted(model_final),
+  resid(model_final),
+  xlab = "Fitted Values",
+  ylab = "Residuals",
+  main = "Residuals vs Fitted"
+)
+abline(h = 0, col = "red")
+
+# QQ plot
+qqnorm(
+  resid(model_final),
+  main = "Normal Q-Q Plot"
+)
+qqline(
+  resid(model_final),
+  col = "red"
+)
+
+par(mfrow = c(1, 1))
+```
+
+
+```{r tab-cog-hists, echo=FALSE, fig.cap="Histograms showing the z-distributions of the three cognitive tests performed after treatment"}
+
+par(mfrow=c(1, 3))
+
+hist(
+  -1*data$Attention_Test_z,
+  main = "Attention Test",
+  xlab = "z Distribution"
+  )
+hist(
+  -1*data$Memory_Test_cards_z,
+  main = "Memory Test",
+  xlab = "z Distribution"
+  )
+hist(
+  -1*data$Mental_Arithmatic_basic_z,
+  main = "Mental Arithmatic Test",
+  xlab = "z Distribution"
+  )
+
+par(mfrow = c(1, 1))
+
+```
+
+
+
+
+
+
+```{r tab-cog-mean-hist, fig.cap="Histogram showing the distribution of the composite cognitive test scores", echo=FALSE}
+hist(data$cog_mean, main = "Histogram of Mean Cognitive Test", xlab = "Average of Three Cognitive Tests")
+
+
+```
+
+
+```{r fig-cog-visit-num, echo=FALSE, fig.cap="Distributions of composite cognitive test scores by visit number. There is potentially a higher variance in scores from the first visit, with more consistent variance across the following three sessions. Visit number didn't prove to contribute to our prediction of cognitive score, but this might suggest a learning curve with the cognitive tests."}
+p <- ggplot(data = data, mapping = aes(x = Visit_Number, y = cog_mean, fill = Visit_Number, group = Visit_Number))
+
+p +
+  geom_boxplot()
+```
+
+
+```{r fig-cog-mean-pulse, echo=FALSE, fig.cap="Scatter plot showing the difference between pulse rates pre- and post-treatment versus the composite cognitive score. The points are coloured by treatment, with a noticible separation between the Jog and Run treatments compared to the Control and Walk treatments."}
+p <- ggplot(data = data, mapping = aes(x = Pulse_delta, y = cog_mean, color = Exercise_type, group = Exercise_type))
+
+p +
+  geom_point() +
+  labs(
+    title = "Cognitive Mean vs Pulse Delta by Exercise Type",
+    x = "Pre-Post Pulse Delta",
+    y = "Composite Cognitive Score",
+    color = "Exercise Treatment"
+  )
+
+```
+
+
+
+
+```{r fig-cog-sleep-scatter, echo=FALSE, fig.cap="Scatter plot showing the composite cognitive score by sleep hours, with coloring for treatment. We see a slightly funneled shape to our data, with some outlying points in the lower left quadrant."}
+p <- ggplot(data = data, mapping = aes(x = Sleep_hours, y = cog_mean, color = Exercise_type, group = Exercise_type))
+
+p +
+  geom_point(position = position_jitter()) +
+  labs(
+    title = "Cognitive Mean vs Sleep Hours by Exercise Type",
+    x = "Sleep Hours",
+    y = "Cognitive Mean",
+    color = "Exercise Type"
+  )
+
+
+```
+
+```{r fig-cog-sleep-person, echo=FALSE, fig.cap="Participant-level plots showing their individual responses to both treatments and sleep hours. From this plot we can start to see the between-patient variance in response to sleep and exercise. Some participants showed very consistent results from trial to trial while others showed much higher variance."}
+p +
+  geom_point(position = position_jitter()) +
+  labs(
+    title = "Cognitive Mean vs Sleep Hours by Exercise Type",
+    x = "Sleep Hours",
+    y = "Cognitive Mean",
+    color = "Exercise Type"
+  ) +
+  facet_wrap(~Name)
+```
+
+
+```{r fig-age-cog, echo=FALSE, fig.cap="Scatter plot showing the distribution of participant ages and their respective cognitive responses to the four treatments. We can see that our sample is skewed yound, which makes sense given that we sampled from a population of college students."}
+p <- ggplot(data = data, mapping = aes(x = Age, y = cog_mean, color = Exercise_type, group = Exercise_type))
+
+p +
+  geom_point() +
+  labs(
+    title = "Cognitive Mean vs Age by Exercise Type",
+    x = "Age",
+    y = "Cognitive Mean",
+    color = "Exercise Type"
+  )
+```
+
+
+
+Below you'll find the emmeans for our final model, evaluating our four treatments at $4$, $6$, and $8$ hours of sleep. 
+```{r}
+emm <- emmeans(model_final, ~ Exercise_type | Sleep_hours,
+               at = list(Sleep_hours = c(4, 6, 8)))
+
+emm
+```
+
+
+
+
+# Appendix B
+
+
+```{r tab-aic-bic-comparison2, echo=FALSE}
+
+kable(model_comp,
+  caption = "(\\#tab:tab-aic-bic-comparison2) AIC and BIC comparisons for a couple of the different models we looked at. While AIC and BIC alone are not grounds for model selection, here we observe a progressive improvement in model fit as we continually simplified the model. In the final model we add a random slope based on the hypothesis that participants may differ in their response to sleep hours.",
+  booktabs = TRUE,
+  longtable = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    font_size = 9
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "5cm") %>%
+  column_spec(2, width = "2.5cm") %>%
+  column_spec(3, width = "2.5cm") %>%
+  column_spec(4, width = "2.5cm") 
+```
+
+We fitted models with both an interaction between `Exercise` and `Sleep` and without. Our additive model only found a significant relationship between `Sleep` and our response. The full model still only found that the physiological components in our model had no significant effect on our response. We, then, ran a model comparison with the function `KBmodcomp()`, which further confirmed that these terms did not significantly improve our model. We removed  'Diastolic,'  'Systolic,'  'Pulse,' and  'Oximeter,' leaving us with this composite model:
+
+$Composite_{ij} = \beta_0 + \beta_1Exercise_{ij} + \beta_2Visit_{ij} + \beta_3Order_{ij} +\beta_4Age_{ij} + \beta_9Sleep_{ij} +\beta_10Exercise_{ij}*Sleep_{ij} + b_i +\epsilon_{ij}$, where $b_i \sim N(0,\sigma_b^2)$ and $\epsilon_{ij} \sim N(0,\sigma^2)$ 
+
+Still finding that Age as well as our design variables, Visit and Order, did not significantly improve our model, we removed those as well. We also hypothesized that the effect of sleep would not be the same for everyone, so in addition to generalizing to individuals not in our study by adding  'Name' as a random intercept, we also included a random slope to allow for the effect of sleep to vary by individual. However, when we tested the random effects for significance through the confint() function in R, we found that the likelihood surface behaved irregularly for the correlation parameter, and after simplifying our model so that our random intercept and random slope were uncorrelated in order to address the issue, we found that that this model performed just as well, if not a little worse, as our random intercept model. In Table \@ref(tab:tab-aic-bic-comparison2) we show the AIC and BIC scores of variations of our model, starting with our full model shown above and progressing to our model with the random intercept and random slope model with only `Sleep` and `Exercise` and their interaction. Using this criteria, we illustrated that this final model is the best fit for our data. Thus, our final reduced model is:
+
+$Composite_{ij} = \beta_0 + \beta_1Exercise_{ij} +  \beta_2Sleep_{ij} +\beta_3Exercise_{ij}*Sleep_{ij} + b_i +\epsilon_{ij}$, where $b_i \sim N(0,\sigma_b^2)$ and $\epsilon_{ij} \sim N(0,\sigma^2)$ 
+
+
+
+
+# Appendix C
+```{r show-code, ref.label = all_labels(), echo = TRUE, eval = FALSE}
+```
