@@ -1,0 +1,350 @@
+---
+title: 'Classification of Leopard Frogs Native to Colorado: an Exploratory Analysis'
+author: 'Matthew Blong & Connor Greenhalgh '
+output:
+  pdf_document: default
+  bookdown::pdf_document2: default
+  toc: true
+---
+
+```{r setup, include=FALSE}
+#Retain this code chunk!!!
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(dplyr)
+library(emmeans)
+library(effects)
+library(pbkrtest)
+library(table1)
+library(tidyverse)
+library(caret)
+library(ranger)
+library(MLmetrics)
+library(C50)
+library(gbm)
+library(table1)
+library(kernlab)
+library(ggthemes)
+
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+```{r}
+#### Read data ####
+# frogs <- read_csv("/Users/matthewblong/Desktop/MAS/SUMMER/LF30.csv") #Matthew path
+frogs <- read_csv("LF30.csv") #Connor path
+```
+
+
+# Abstract
+
+# Introduction 
+
+Amphibians are declining on a global scale, where a variety of ecological factors threaten roughly 40% of amphibian species (Ward et al. 2026). Locally, the Colorado leopard frog has been a subject of particular concern. There are four main reasons for this species' endangerment. First, rising population growth in Front Range metropolises encroaches on wetland habitats native to leopard frogs. Second, increasing amounts of Chytrid bacteria interfere with leopard frogs’ respiration through keratinizing its skin, functionally causing cardiac arrest. Third, species such as bull frogs outcompete leopard frogs for resources as well as predate on leopard frogs as an additional food source. Lastly, drought due to climate change in the plain region threatens living conditions.  
+
+There are two main species of leopard frogs native to Colorado: northern leopard frogs (NLF) and plains leopard frogs (PLF). Both species have natural sympatry in southeast Colorado. However, with the exacerbating effects of climate change, this ecological overlap is becoming more pronounced. A natural consequence of this sympatry is interbreeding between frog species, leading to hybrid leopard frogs (HYB). Hybridization between these two species has been of concern for conservationists due to high-risk consequences such as genetic swamping, decreased population growth rates, loss of adaptive traits, and even local extinction. As hybridization increases, conservationists are finding it more difficult to differentiate between these two species, which makes species-specific population threats harder to diagnose and address.  
+
+The following observational study involved capturing and documenting 50 randomly selected leopard frogs from various leopard frog habitats across Colorado and categorizing species based on factor-level traits (listed below). The species in our dataset are imbalanced: NLF and PLF each have 20 frogs and HYB have 10. The primary goal of our analysis is to identify which combination of morphological traits best predicts leopard frog species: plains, northern, or hybrid leopard frog. By comparing multiple machine learning techniques, we will determine which model classifies frog species the most accurately, which subsequently through feature selection, will determine the most contributive morphological features to species classification. In addition, we want to determine which species, if any, can be identified by morphology alone.  
+
+ 
+
+# Summary Statistics 
+
+```{r}
+#### Clean Data ####
+frogs_clean <- frogs |> 
+  select(-c(Individual, SVL)) |> 
+  mutate(across(everything(), as.factor)) |> 
+  mutate(across(where(is.factor), ~ factor(str_replace_all(levels(.x), " ", "_")[.x])))
+
+# names(frogs_clean) <- str_replace(names(frogs_clean), "\", "_")
+names(frogs_clean)
+names(frogs_clean) <- gsub("\\s+", "_", names(frogs_clean))
+#### Either remove but also fine with keeping it since we can discuss why we didn't use a train test split
+#### Train/test split ####
+# ind <- sample(1:50, ceiling(nrow(frogs) * 0.7))
+# frogs_train <- frogs_clean[ind,]
+# frogs_test <- frogs_clean[-ind,]
+
+#### Merge left and right as constant result or ambiguous if mixed ####
+frogs_clean_comb <- frogs_clean |> 
+  mutate(Tympanum = if_else(Left_Tympanum == Right_Tympanum, Left_Tympanum, "Ambiguous"),
+         DF_Insetness = if_else(DFL_Insetness == DFR_Insetness, DFL_Insetness, "Ambiguous"),
+         DF_Brokenness = if_else(DFL_Brokenness == DFR_Brokenness, DFL_Brokenness, "Ambiguous")) |> 
+select(-c(Left_Tympanum, Right_Tympanum, DFL_Insetness, DFL_Brokenness, DFR_Insetness, DFR_Brokenness)) # variable reduction helps prevent overfitting
+
+#### Some models need encoded variables
+dummy <- dummyVars(ID ~ ., data = frogs_clean, sep = "_")
+dummy_comb <- dummyVars(ID ~ ., data = frogs_clean_comb, sep = "_")
+frogs_encoded <- predict(dummy, frogs_clean) |> 
+  as.data.frame()
+frogs_encoded_comb <- predict(dummy_comb, frogs_clean_comb) |> 
+  as.data.frame()
+frogs_encoded$ID <- frogs_clean$ID
+frogs_encoded_comb$ID <- frogs_clean_comb$ID
+```
+
+```{r}
+ggplot(frogs_clean, aes(x = ID, fill = ID)) + 
+  geom_bar() +
+  scale_fill_manual(values = colorblind_pal()(8)[c(2,3,4)])
+# ggplot(frogs_clean, aes(x = `Left Tympanum`, fill = ID)) + 
+#   geom_bar()
+
+plt <- 
+  frogs_clean |>
+  mutate(Thigh_Pattern = if_else(str_detect(tolower(Thigh_Pattern), 'individually'), 'Individual', Thigh_Pattern)) |> 
+  mutate(Upper_Lip_Stripe = if_else(str_detect(tolower(Upper_Lip_Stripe), 'distinct'), str_extract(Upper_Lip_Stripe, '[^_]+'), Upper_Lip_Stripe)) |> 
+  pivot_longer(-ID, names_to = "predictor", values_to = "value") |>
+  ggplot(aes(x = value, fill = ID)) +
+  geom_bar(position = "fill") +
+  facet_wrap(~ predictor, scales = "free_x") +
+  labs(y = "Proportion", title = "Predictor vs Species") +
+  scale_fill_manual(values = colorblind_pal()(8)[c(2,3,4)])
+  # scale_fill_colorblind()
+
+plt
+```
+
+```{r}
+table1(~.|ID, data=frogs_clean,  caption = "Table 0: Count data for each variable by frog species")
+```
+
+# Statistical Methods 
+
+Our original dataset included 12 variables. However, to consolidate information, we combined variables that were divided into right and left sides. This applied to ‘DF Insetness,’ ‘DF Brokeness,’ and ‘Tympanum,’ where if both right and left sides matched, then the new combined variable would be the matching factor, and if right and left sides were different, the new combined variable would be labeled as ‘Ambiguous.’ Researchers recommended this method to reduce the number of variables with minimal loss of information (Ward et al. 2026).
+
+```{r tab-variables, echo=FALSE}
+### Variable Description Table ###
+variables <- data.frame(
+  Variable = c(
+    "ID", "SVL", "DF Insetness", "DF Brokenness", "Nose Spot", "Thigh Pattern", "Tympanum",
+    "Upper Lip Stripe"),
+  
+  Description = c(
+    "The species of each frog",
+    "Snout to vent length of each frog ",
+    "Categorizes the Dorsal Front Insetness ",
+    "Categorizes the Dorsal Front Brokenness ",
+    "Indicates whether the frog has a spot on its nose",
+    "Describes the thigh pattern on each frog",
+    "Describes whether the tympanum of each frog has a spot",
+    "Categorizes the distinctness of a stripe on each frog’s upper lip"),
+  
+  Class = c(
+    "Factor (3 levels: NLF, PLF, HYB)", "Numeric", "Factor (3 levels: Inset, Straight, Ambiguous)", "Factor (3 levels: Broken, Continuous, Ambiguous)", "Factor (2 levels: 1, 0)", "Factor (3 levels: Reticulated, Individually Spotted, Ambiguous)", "Factor (3 levels: Spot, No Spot, Ambiguous)", "Factor (3 levels: Distinct in front of eye, Indistinct in front of eye, Ambiguous)"),
+  
+  Role = c(
+    "Response",
+    "Not Applicable",
+    "Predictor",
+    "Predictor",
+    "Predictor",
+    "Predictor",
+    "Predictor",
+    "Predictor"
+  )
+)
+
+kable(
+  variables,
+  caption = "Description of all variables measured with units and role in data analysis",
+  booktabs = TRUE,
+  longtable = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("hold_position"),
+    font_size = 9
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "2.5cm") %>%
+  column_spec(2, width = "6cm") %>%
+  column_spec(3, width = "2.5cm") %>%
+  column_spec(4, width = "3cm")
+```
+
+All relevant predictors are factor variables. For each variable, researchers captured and collected 50 Colorado Leopard Frogs and classified each according to the factor levels listed above (Table #). Researchers determined leopard frog species based on location of collection and combination of expected traits. Snout to vent length (SVL) is not relevant to our analysis because researchers only collected this variable to determine whether the frogs were adults or not as non-adult frogs were discarded and not used in their data collection process (Ward et al. 2026). ‘Individual’, a unique identifier for each frog, was not used in the classification process. After variable reduction, we used 6 predictor variables for classifying our response (ID). We predicted the species for each frog using several machine learning methods such as random forests, multinomial logistic regression, and GLMNET. All models have minimal parametric assumptions. 
+
+Due to small sample size (n=50), we prioritized k-fold cross validation over a train-test split to decrease variance in our estimates and increase reliability in model performance. We use the trainControl function from the caret package in R to define resampling and training parameters (Kuhn, 2008). With this function, we conduct cross validation with repeated training/test splits (5 k-folds with 10 repetitions) for multiclass classification since overfitting is a concern with only 50 species recorded. In addition, we confirm researchers' above-mentioned intuition to combine variables since feature reduction can help prevent overfitting by reducing complexity and preventing memorization of noise (GeeksforGeeks, 2024). For each machine learning method, we extract the best tuned model by optimizing balanced accuracy, rank variable importance (computed by varImp() from the caret package), confusion matrices, and our model performance metrics.  
+
+The primary metric for comparison is prediction accuracy. Though accuracy is a key metric in measuring model performance, it is often incomplete in its assessment of model dependability, especially with imbalanced data (Babu 2025). As a result, we evaluate the following models using other measures including precision, recall, F1 Score, and balanced accuracy to provide a more holistic comparison between models. Precision is “the proportion of all the model's positive classifications that are actually positive” (Google, 2024). Recall is the true positive rate, which is correctly labeled classes over both correctly and incorrectly labeled classes. F1 Score is “the harmonic mean...of precision and recall.” Balanced accuracy averages recall and specificity, true negative rate (Bobbitt, 2021). In addition, since we want to determine if any of the three species can be classified through morphology alone, we evaluate model performance for each class as well.   
+
+Our first classification model is the machine learning method Random Forest. Since Random Forest handles categorical variables well, we did not encode our predictors into dummy variables. Random Forest combines the results of multiple decision trees, each analyzing different parts of the data. For classification, predictions are based on the category for which the majority of trees vote (GeeksforGeeks, 2024). Then, we train a Random Forest model with the ranger method, which is “a fast implementation of random forests” (ranger function, n.d.).  Our tuning parameters for Random Forest include mtry, splitrule, and min.node.size. mtry is the “Number of Randomly Selected Predictors” to split a tree at any particular node (Kuhn, 2016). Splitrule is the algorithm that decides where the features in each decision tree splits to best optimize classification. Min.node.size is the “[v]alue of minimal node size used” (ranger, n.d.). The contribution of each variable in a Random Forest model is calculated by ranking mean decrease in Gini (Prabhakaran, 2026), which is “defined as the total decrease in node impurity averaged over all trees of the ensemble” (Cho & Su, n.d.). 
+
+
+```{r}
+#### RF Model ####
+set.seed(1)
+#set train control
+tc <- trainControl(
+  method = "repeatedcv", #repeated cross validation. Splitting data into folds and then training to test performance
+  number = 5, # splitting data into 5 folds. 1 fold will be tested
+  repeats = 10, # The entire k-fold CV is repeated 10 times
+  classProbs = TRUE,
+  summaryFunction = multiClassSummary, # returns several metrics; more than just accuracy
+  savePredictions = "final" # saves best model
+)
+
+#set tune grid
+tg <- expand.grid(
+  mtry = 2:8, # number of randomly selected predictors at each tree split
+  splitrule = c("gini", "extratrees"), # how to compare splits. extratrees uses more randomness
+  min.node.size = 1 # minimum number of obs for a split in the tree 
+)
+
+#run model
+frogs_rf <- train(
+  ID ~ .,
+  data = frogs_clean_comb,
+  method = "ranger",
+  metric = "Mean_Balanced_Accuracy", #Calculates the average accuracy for each class or species. Smaller class sizes aren't less valuable like in overall accuracy
+  trControl = tc,
+  tuneGrid = tg,
+  num.trees = 500,
+  importance = "impurity" #measures how each split reduces class mixing
+)
+
+#check best tunes
+frogs_rf$bestTune
+
+#check variable importance
+varImp(frogs_rf) # scaled raw values. Directionless. it is relative so a score of 50 is half as important as 100
+plot(varImp(frogs_rf))
+
+#build confusion matrices
+confusionMatrix(frogs_rf$pred$pred, frogs_rf$pred$obs, mode = "everything")
+```
+
+Our next model uses multinomial logistic regression, which predicts class probabilities through “a link function to mathematically connect the linear combination of input variables and their coefficients (known as the linear predictor) to the expected probability of each category” (Frost, 2024). We use the same train control as mentioned above to set training parameters as well as perform cross validation. Our only tuning hyperparameter is decay. Weight decay does not limit the number of parameters the model uses to classify data points but rather “operates by restricting the values that the parameters can take” (Aston et al., 2023). Variable importance for multinomial logistic regression is calculated using “combinations of the absolute values of the weights” (Kuhn, 2016).   
+
+```{r}
+#### Multinomial Logisitic Regression ####
+set.seed(1)
+
+# set tune grid
+tg_mlr <- expand.grid(decay = c(0, 0.001, 0.01, 0.1, 1)) #L2 weight. 0 is unpenalized and the larger values add more regularization 
+
+# run model
+frogs_mlr <- train(
+  ID ~ .,
+  data = frogs_encoded_comb,
+  method = "multinom",
+  metric = "Mean_Balanced_Accuracy",
+  trControl = tc,
+  tuneGrid = tg_mlr,
+  trace = FALSE
+)
+# names(frogs_mlr$trainingData) <- gsub("/", "", names(frogs_mlr$trainingData))
+
+# check best tune
+frogs_mlr$bestTune
+
+# variable interpretation
+temp <- summary(frogs_mlr)
+temp$coefnames <- str_extract(temp$coefnames, "[A-Za-z\\s]+")
+temp$coefficients
+
+# variable importance
+varImp(frogs_mlr)
+
+# confusion matrix
+confusionMatrix(frogs_mlr$pred$pred, frogs_mlr$pred$obs, mode = "everything")
+```
+
+The final model in our analysis is GLMNET, which fits multinomial logistic regression with maximum likelihood penalties: the "ridge penalty shrinks the coefficients of correlated predictors towards each other while the lasso tends to pick one of them and discard the others" (Hastie et al., 2026). This model has two hyperparameters to train: alpha and lambda. Alpha chooses between a ridge, lasso, or elastic net penalty, and lambda controls the strength of this penalty parameter (Campbell, 2025). Variable importance is calculated by ranking the absolute value of the coefficients corresponding [sic.] the tuned model” (Kuhn, 2016).  
+
+```{r}
+#### GLMNET ####
+set.seed(1)
+
+#set tune grid
+tg_glmnet <- expand.grid(
+  alpha = seq(0, 1, by = 0.25),  # mix of Ridge (0) and LASSO (1)
+  lambda = 10 ^ seq(-4, 0, length = 20) #regularization strenngth. Larger values shrink coefficients more
+)
+
+# run model
+frogs_glmnet <- train(
+  ID ~ .,
+  data = frogs_encoded_comb,
+  method = "glmnet", #### try others
+  metric = "Mean_Balanced_Accuracy",
+  trControl = tc,
+  tuneGrid = tg_glmnet,
+  trace = FALSE
+)
+
+# check best tune
+frogs_glmnet$bestTune
+
+# Extract coefficients at the best lambda
+coef(frogs_glmnet$finalModel, s = frogs_glmnet$bestTune$lambda)
+
+# variable importance
+varImp(frogs_glmnet)
+
+# confusion matrix
+confusionMatrix(frogs_glmnet$pred$pred, frogs_glmnet$pred$obs, mode = "everything")
+```
+
+# Limitations and Alternatives 
+
+Due to small sample size (n=50), there are fewer observations on which our machine learning models to train. Thus, overfitting is a concern although our moderate accuracy metrics makes us less suspicious since we took measures to address this issue such as k-fold repeated cross validation and variable reduction. However, a larger sample size would have allowed us to consider hold-out data. In addition, we suspect that had our sample size been larger, our prediction accuracy would have been higher since our machine learning algorithms, again, would have been better able to capture the variability within our data. 
+
+*Do your methods produce a classifier that is easy to interpret or implement for someone identifying frogs in nature?*
+
+# Results and Conclusions 
+
+The best tuned model for Random Forest with an overall accuracy of 0.872 (0.8395, 0.9) had `mtry` = 4, `splitrule` = ‘extratrees’, and `min.node.size` = 1. Four predictors were randomly selected to split decision trees. The split rule is `extratrees`, which “trains numerous decision trees and aggregates the results from the group of decision trees to output a prediction” (Thankachan, 2022). The value of minimal node size is one.  
+
+The best tuned model for Multinomial Logistic Regression with an overall accuracy of 0.864 (0.8308, 0.8928) had `decay` = 0.1. Our best tuned model exhibited stable performance with a larger amount of regularization, which suggests that simpler models are sufficient for the data (Kuhn & Johnson, 2016). 
+
+The best tuned model for GLMNET with an overall accuracy of 0.914 (0.8859, 0.9371) had `alpha` = 1 and `lambda` = 0.0886, which means this model used Lasso regularization and a moderate strength in our regularization penalty. 
+
+
+# Authors’ Statements 
+
+\newpage
+
+# References 
+
+Aston, Z., Zachary C., L., Mu, L., & Alexander J., S. (2023). Dive into Deep Learning. Cambridge University Press. 
+
+Babu, A. (2025, March 13). Why Accuracy Isn’t Enough: A Guide to AI/ML Model Evaluation. Medium. https://medium.com/@aditib259/why-accuracy-isnt-enough-a-guide-to-ai-ml-model-evaluation-f97c0c394375 
+
+Bobbitt, Zach. (2021, October 6). What is Balanced Accuracy? (Definition & Example). Statology. https://www.statology.org/balanced-accuracy/ 
+
+Campbell, J. J. (2025, July 10). Lasso and Ridge Regression with Caret in R. RPubs ; RStudio. https://rpubs.com/uky994/1328850 
+
+Cho, H., & Su, R. (n.d.). R: Calculates Gini Importance or Mean Decrease Impurity (same... R-Project.org. Retrieved June 23, 2026, from https://search.r-project.org/CRAN/refmans/forestRK/html/importance.forestRK.html 
+
+Frost, J. (2024, October 13). Multinomial Logistic Regression: Overview & Example. Statistics by Jim. https://statisticsbyjim.com/regression/multinomial-logistic-regression/  
+
+GeeksforGeeks. (2024, February 22). Random Forest Algorithm in Machine Learning. GeeksforGeeks. https://www.geeksforgeeks.org/machine-learning/random-forest-algorithm-in-machine-learning/ 
+
+Google. (2024). Classification: Accuracy, recall, precision, and related metrics. Google for Developers. https://developers.google.com/machine-learning/crash-course/classification/accuracy-precision-recall  
+
+Hastie, T., Qian, J., & Tay, K. (2026, April 28). An Introduction to `glmnet`. Glmnet.stanford.edu. https://glmnet.stanford.edu/articles/glmnet.html 
+
+Kuhn, Max (2008). “Building Predictive Models in R Using the caret Package.” Journal of Statistical Software, 28(5), 1–26. doi:10.18637/jss.v028.i05. https://www.jstatsoft.org/index.php/jss/article/view/v028i05. 
+
+Kuhn, M. (2016). Classification and Regression Training Description Misc functions for training and plotting classification and regression models. https://cran.r-project.org/web/packages/caret/caret.pdf 
+
+Kuhn, M., & Johnson, K. (2016). Applied predictive modeling. Springer. 
+
+Prabhakaran, S. (2026, June 22). caret varImp() in R: Rank Predictor Importance Scores. R-Statistics.co. https://r-statistics.co/caret-varImp-in-R.html 
+
+ranger function - RDocumentation. (n.d.). Www.rdocumentation.org. https://www.rdocumentation.org/packages/ranger/versions/0.16.0/topics/ranger 
+
+Thankachan, K. (2022, August 6). What? When? How?: ExtraTrees Classifier | Towards Data Science. Towards Data Science. https://towardsdatascience.com/what-when-how-extratrees-classifier-c939f905851c/ 
+
+Ward, F., Bailey, L., Newmark, E. (2026, May 19). "Comparative Morphological Analysis of a Leopard Frog Complex in Colorado", STAA 556 class presentation.  
+
+\newpage
+
+# Appendix
+```{r show-code, ref.label = all_labels(), echo = TRUE, eval = FALSE}
+```
